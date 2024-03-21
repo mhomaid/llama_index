@@ -1,9 +1,7 @@
-from typing import List, Optional, TypedDict
 from typing import Any, Iterator, List, Optional
 from llama_index.core.readers.base import BaseReader
 from llama_index.core.schema import Document
 from confluent_kafka import Consumer, KafkaError, KafkaException
-
 
 def error_cb(err):
     print("Client error: {}".format(err))
@@ -13,7 +11,7 @@ def error_cb(err):
 class KafkaReader(BaseReader):
     def __init__(
         self,
-        bootstrap_servers: str,
+        bootstrap_servers: List[str],
         topics: List[str],
         group_id: str,
         auto_offset_reset: str = 'latest',
@@ -36,7 +34,7 @@ class KafkaReader(BaseReader):
         self.sasl_username = sasl_username
         self.sasl_password = sasl_password
         self.consumer_config = {
-            'bootstrap.servers': self.bootstrap_servers,
+            'bootstrap.servers': ','.join(self.bootstrap_servers),
             'group.id': self.group_id,
             'client.id': self.client_id,
             'auto.offset.reset': self.auto_offset_reset,
@@ -53,10 +51,10 @@ class KafkaReader(BaseReader):
 
     def _create_consumer(self):
         self.consumer = Consumer(self.consumer_config)
-        self.consumer.subscribe([self.topics])
+        self.consumer.subscribe(self.topics)
 
     def _handle_record(self, record: Any, id: Optional[str]) -> Document:
-        return Document(page_content=record.value().decode('utf-8'))
+        return Document(text=record.value().decode('utf-8'))
 
     def lazy_load(self) -> Iterator[Document]:
         if not self.consumer:
@@ -73,12 +71,10 @@ class KafkaReader(BaseReader):
                     print(f"Consumer error: {msg.error()}")
                 continue
             document = self._handle_record(msg, str(msg.offset()))
-            print(f"Loaded", document, " documents from Kafka")
             yield document
 
-    def load(self) -> list[Document]:
+    def load(self) -> List[Document]:
         documents = list(self.lazy_load())
-        print(f"Loaded {len(documents)} documents from Kafka")
         return documents
 
     def close(self):

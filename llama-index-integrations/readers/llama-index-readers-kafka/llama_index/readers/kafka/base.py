@@ -1,86 +1,86 @@
 from typing import List, Optional, TypedDict
-
+from typing import Any, Iterator, List, Optional
 from llama_index.core.readers.base import BaseReader
 from llama_index.core.schema import Document
+from confluent_kafka import Consumer, KafkaError, KafkaException
 
-from confluent_kafka import Consumer, KafkaError
+
+def error_cb(err):
+    print("Client error: {}".format(err))
+    if err.code() == KafkaError._ALL_BROKERS_DOWN or err.code() == KafkaError._AUTHENTICATION:
+        raise KafkaException(err)
 
 class KafkaReader(BaseReader):
-    """Kafka reader class for LlamaIndex.
-
-    This class provides a way to load data from Kafka topics into LlamaIndex.
-    """
-
     def __init__(
         self,
-        bootstrap_servers: List[str],
-        topic: str,
+        bootstrap_servers: str,
+        topics: List[str],
         group_id: str,
-        auto_offset_reset: str = "earliest",
-        enable_auto_commit: bool = True,
-        max_poll_interval_ms: int = 300000,
-        **kwargs,
-    ):
-        """Initialize the KafkaReader.
-
-        Args:
-            bootstrap_servers (List[str]): List of Kafka bootstrap servers.
-            topic (str): Kafka topic to read from.
-            group_id (str): Consumer group ID.
-            auto_offset_reset (str): Auto offset reset strategy. Default is "earliest".
-            enable_auto_commit (bool): Whether to enable auto commit. Default is True.
-            max_poll_interval_ms (int): Maximum poll interval in milliseconds. Default is 300000.
-            **kwargs: Additional keyword arguments to pass to the Kafka consumer.
-        """
+        auto_offset_reset: str = 'latest',
+        client_id: Optional[str] = None,
+        security_protocol: Optional[str] = None,
+        sasl_mechanism: Optional[str] = None,
+        sasl_username: Optional[str] = None,
+        sasl_password: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        if not bootstrap_servers:
+            raise ValueError("bootstrap_servers cannot be empty")
         self.bootstrap_servers = bootstrap_servers
-        self.topic = topic
+        self.topics = topics
         self.group_id = group_id
         self.auto_offset_reset = auto_offset_reset
-        self.enable_auto_commit = enable_auto_commit
-        self.max_poll_interval_ms = max_poll_interval_ms
-        self.kwargs = kwargs
-
-    def load_data(self) -> List[Document]:
-        """Load data from Kafka.
-
-        This method creates a Kafka consumer, subscribes to the specified topic,
-        and consumes messages from the topic. It returns the loaded data as a list of Document objects.
-
-        Returns:
-            List[Document]: The loaded data from Kafka as a list of Document objects.
-        """
-        conf = {
-            "bootstrap.servers": ",".join(self.bootstrap_servers),
-            "group.id": self.group_id,
-            "auto.offset.reset": self.auto_offset_reset,
-            "enable.auto.commit": self.enable_auto_commit,
-            "max.poll.interval.ms": self.max_poll_interval_ms,
+        self.client_id = client_id
+        self.security_protocol = security_protocol
+        self.sasl_mechanism = sasl_mechanism
+        self.sasl_username = sasl_username
+        self.sasl_password = sasl_password
+        self.consumer_config = {
+            'bootstrap.servers': self.bootstrap_servers,
+            'group.id': self.group_id,
+            'client.id': self.client_id,
+            'auto.offset.reset': self.auto_offset_reset,
+            'error_cb': error_cb,
+            **kwargs,
         }
-        conf.update(self.kwargs)
+        if self.security_protocol:
+            self.consumer_config['security.protocol'] = self.security_protocol
+        if self.sasl_mechanism:
+            self.consumer_config['sasl.mechanism'] = self.sasl_mechanism
+            self.consumer_config['sasl.username'] = self.sasl_username
+            self.consumer_config['sasl.password'] = self.sasl_password
+        self.consumer = None
 
-        consumer = Consumer(conf)
-        consumer.subscribe([self.topic])
+    def _create_consumer(self):
+        self.consumer = Consumer(self.consumer_config)
+        self.consumer.subscribe([self.topics])
 
-        loaded_data = []
+    def _handle_record(self, record: Any, id: Optional[str]) -> Document:
+        return Document(page_content=record.value().decode('utf-8'))
 
-        try:
-            while True:
-                msg = consumer.poll(1.0)
+    def lazy_load(self) -> Iterator[Document]:
+        if not self.consumer:
+            self._create_consumer()
+        while True:
+            msg = self.consumer.poll(1.0)
+            if msg is None:
+                break
+            if msg.error():
+                if msg.error().code() == KafkaError._ALL_BROKERS_DOWN or \
+                        msg.error().code() == KafkaError._AUTHENTICATION:
+                    raise KafkaException(msg.error())
+                else:
+                    print(f"Consumer error: {msg.error()}")
+                continue
+            document = self._handle_record(msg, str(msg.offset()))
+            print(f"Loaded", document, " documents from Kafka")
+            yield document
 
-                if msg is None:
-                    continue
-                if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        continue
-                    else:
-                        raise Exception(msg.error())
+    def load(self) -> list[Document]:
+        documents = list(self.lazy_load())
+        print(f"Loaded {len(documents)} documents from Kafka")
+        return documents
 
-                content = msg.value().decode("utf-8")
-                document = Document(content)
-                loaded_data.append(document)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            consumer.close()
-
-        return loaded_data
+    def close(self):
+        if self.consumer:
+            self.consumer.close()

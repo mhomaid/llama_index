@@ -783,6 +783,7 @@
   "ClickHouseReader": "llama_index.readers.clickhouse",
   "MetalReader": "llama_index.readers.metal",
   "BoardDocsReader": "llama_index.readers.boarddocs",
+  "KafkaReader": "llama_index.readers.kafka",
   "GuidanceQuestionGenerator": "llama_index.question_gen.guidance",
   "OpenAIQuestionGenerator": "llama_index.question_gen.openai",
   "PaLM": "llama_index.llms.palm",
